@@ -11,12 +11,12 @@ bash scripts/build-app.sh
 /usr/bin/python3 scripts/package-release.py
 ```
 
-当前版本生成 `dist/release-v0.3.0/`：
+当前版本生成 `dist/release-v0.3.1/`：
 
 | 文件 | 用途 |
 | --- | --- |
 | `Figure-Converter.zip` | 给 Apple Silicon Mac 用户下载的应用 |
-| `Figure-Converter-v0.3.0-source.zip` | 仅含公开源码、文档、许可证和合成测试脚本 |
+| `Figure-Converter-v0.3.1-source.zip` | 仅含公开源码、文档、许可证和合成测试脚本 |
 | `SHA256SUMS.txt` | 校验上面两个 ZIP 是否传输完整 |
 | `RELEASE_NOTES.md` | 可直接粘贴到 GitHub Release 的说明 |
 
@@ -30,7 +30,7 @@ bash scripts/build-app.sh
 ```sh
 git init -b main
 git add .gitignore README.md LICENSE app engine scripts tests docs
-git commit -m "Release Figure Converter 0.3.0"
+git commit -m "Release Figure Converter 0.3.1"
 git remote add origin https://github.com/YOUR_USERNAME/figure-converter.git
 git push -u origin main
 ```
@@ -41,9 +41,9 @@ git push -u origin main
 
 在仓库页面进入 **Releases → Draft a new release**：
 
-1. 新建标签 `v0.3.0`，目标分支选择刚上传源码的 `main`。
-2. 标题填写 `Figure Converter v0.3.0`，说明复制发布目录中的 `RELEASE_NOTES.md`。
-3. 在附件区上传 `Figure-Converter.zip`、`Figure-Converter-v0.3.0-source.zip` 和 `SHA256SUMS.txt`。
+1. 新建标签 `v0.3.1`，目标分支选择刚上传源码的 `main`。
+2. 标题填写 `Figure Converter v0.3.1`，说明复制发布目录中的 `RELEASE_NOTES.md`。
+3. 在附件区上传 `Figure-Converter.zip`、`Figure-Converter-v0.3.1-source.zip` 和 `SHA256SUMS.txt`。
 4. 当前版本属于早期本地工具，建议勾选 **This is a pre-release**，先保存草稿确认附件齐全，再点击 **Publish release**。
 
 GitHub 会额外生成名为 “Source code” 的压缩包。它们是源码，不是可双击运行的 Mac 应用。给普通用户的下载指引应明确选择 **`Figure-Converter.zip`**。操作入口可参考 [GitHub 官方发布说明](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
