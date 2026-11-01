@@ -14,7 +14,7 @@
 
 ## 下载哪个文件
 
-- **普通用户：`Figure Converter.zip`**，解压后打开 Mac 应用。
+- **普通用户：`Figure-Converter.zip`**，解压后打开 Mac 应用。
 - 开发者：`Figure-Converter-v0.3.0-source.zip` 或 GitHub 自动生成的 Source code。
 - `SHA256SUMS.txt` 用于校验下载文件。
 

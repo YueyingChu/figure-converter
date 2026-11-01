@@ -17,7 +17,7 @@
 
 ## 开始使用
 
-1. 在本仓库的 **Releases** 中下载 `Figure Converter.zip`，解压后打开应用；也可按下方说明从源码构建。
+1. 在本仓库的 **Releases** 中下载 `Figure-Converter.zip`，解压后打开应用；也可按下方说明从源码构建。
 2. 拖入一个或多个已保存的 `.ai` 文件，选择需要的格式。默认选中 SVG、EMF、PNG，PDF 和 EPS 可按需勾选。
 3. 按需开启「自定义宽度」，例如填入 **180 mm**；高度自动按比例计算。PNG 可选 **300 / 600 / 1200 DPI**。
 4. 点击「开始转换」。完成后，点击结果中的文件夹按钮查看输出。
@@ -57,7 +57,7 @@
 bash scripts/build-app.sh
 ```
 
-构建结果为 `dist/Figure Converter.app` 和 `dist/Figure Converter.zip`。应用使用临时签名，尚未使用 Developer ID 签名或完成 Apple 公证；首次打开的说明见[使用说明](docs/USAGE.md#首次启动)。
+构建结果为 `dist/Figure Converter.app` 和 `dist/Figure-Converter.zip`。应用使用临时签名，尚未使用 Developer ID 签名或完成 Apple 公证；首次打开的说明见[使用说明](docs/USAGE.md#首次启动)。
 
 运行自动化检查：
 

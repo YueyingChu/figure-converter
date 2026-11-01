@@ -37,7 +37,7 @@ def package():
     version = info["CFBundleShortVersionString"]
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError("Expected a numeric major.minor.patch version")
-    application = ROOT / "dist/Figure Converter.zip"
+    application = ROOT / "dist/Figure-Converter.zip"
     if not application.is_file():
         raise ValueError("Run bash scripts/build-app.sh first")
     prefix = "Figure Converter.app/Contents/"
@@ -77,7 +77,7 @@ def package():
                 raise ValueError("Bundled conversion engine differs: " + name)
     destination = ROOT / "dist" / ("release-v" + version)
     destination.mkdir(exist_ok=True)
-    app_target = destination / "Figure Converter.zip"
+    app_target = destination / "Figure-Converter.zip"
     shutil.copy2(application, app_target)
     source_target = destination / ("Figure-Converter-v" + version + "-source.zip")
     with zipfile.ZipFile(source_target, "w", compression=zipfile.ZIP_DEFLATED) as archive:

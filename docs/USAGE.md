@@ -12,7 +12,7 @@ Figure Converter 将已保存的 Illustrator 文件转换为 SVG、EMF、PNG、P
    ```
 
    需要 Python 3.9 或以上。应用固定调用这个路径；仅在其他位置安装 Python 不会替代它。如果该路径不可用，可按 Apple 的 [Command Line Tools 安装说明](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/)运行 `xcode-select --install`，安装完成后再次检查版本。无需安装 pip 包。
-3. 从本仓库的 Releases 下载 `Figure Converter.zip`，解压并打开 `Figure Converter.app`。也可将应用移入「应用程序」文件夹。
+3. 从本仓库的 Releases 下载 `Figure-Converter.zip`，解压并打开 `Figure Converter.app`。也可将应用移入「应用程序」文件夹。
 4. macOS 首次询问是否允许控制 Illustrator 时，允许这项「自动化」权限。若此前拒绝，可在「系统设置 → 隐私与安全性 → 自动化」中调整。
 
 当前应用使用临时签名，尚未使用 Developer ID 签名或完成 Apple 公证。若 macOS 提示无法验证开发者，仅在确认下载来源可信后，按 [Apple 官方说明](https://support.apple.com/en-us/102445)使用系统提供的「仍要打开」选项；也可以从本仓库源码构建。

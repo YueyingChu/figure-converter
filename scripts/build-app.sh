@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 destination_app="$repo_root/dist/Figure Converter.app"
-destination_zip="$repo_root/dist/Figure Converter.zip"
+destination_zip="$repo_root/dist/Figure-Converter.zip"
 build_cache="$repo_root/.build/swift-module-cache"
 staging_root="$(mktemp -d /private/tmp/figure-converter-build.XXXXXX)"
 app_path="$staging_root/Figure Converter.app"
@@ -53,10 +53,10 @@ PY
 /usr/bin/codesign --force --deep --sign - "$app_path"
 /usr/bin/codesign --verify --deep --strict "$app_path"
 /usr/bin/ditto -c -k --keepParent --norsrc --noextattr \
-  "$app_path" "$staging_root/Figure Converter.zip"
+  "$app_path" "$staging_root/Figure-Converter.zip"
 
 # Include readable installation instructions and the license next to the app.
-/usr/bin/python3 - "$repo_root" "$staging_root/Figure Converter.zip" <<'PY'
+/usr/bin/python3 - "$repo_root" "$staging_root/Figure-Converter.zip" <<'PY'
 import sys, zipfile
 from pathlib import Path
 root, archive = map(Path, sys.argv[1:])
@@ -67,7 +67,7 @@ PY
 
 mkdir -p "$destination_app"
 /usr/bin/rsync -a --delete "$app_path/" "$destination_app/"
-cp "$staging_root/Figure Converter.zip" "$destination_zip"
+cp "$staging_root/Figure-Converter.zip" "$destination_zip"
 # This is best effort; a file provider may attach FinderInfo again. The ZIP
 # remains the clean, verified distribution artifact regardless of that metadata.
 /usr/bin/xattr -dr com.apple.FinderInfo "$destination_app" 2>/dev/null || true

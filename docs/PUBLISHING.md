@@ -15,7 +15,7 @@ bash scripts/build-app.sh
 
 | 文件 | 用途 |
 | --- | --- |
-| `Figure Converter.zip` | 给 Apple Silicon Mac 用户下载的应用 |
+| `Figure-Converter.zip` | 给 Apple Silicon Mac 用户下载的应用 |
 | `Figure-Converter-v0.3.0-source.zip` | 仅含公开源码、文档、许可证和合成测试脚本 |
 | `SHA256SUMS.txt` | 校验上面两个 ZIP 是否传输完整 |
 | `RELEASE_NOTES.md` | 可直接粘贴到 GitHub Release 的说明 |
@@ -43,16 +43,16 @@ git push -u origin main
 
 1. 新建标签 `v0.3.0`，目标分支选择刚上传源码的 `main`。
 2. 标题填写 `Figure Converter v0.3.0`，说明复制发布目录中的 `RELEASE_NOTES.md`。
-3. 在附件区上传 `Figure Converter.zip`、`Figure-Converter-v0.3.0-source.zip` 和 `SHA256SUMS.txt`。
+3. 在附件区上传 `Figure-Converter.zip`、`Figure-Converter-v0.3.0-source.zip` 和 `SHA256SUMS.txt`。
 4. 当前版本属于早期本地工具，建议勾选 **This is a pre-release**，先保存草稿确认附件齐全，再点击 **Publish release**。
 
-GitHub 会额外生成名为 “Source code” 的压缩包。它们是源码，不是可双击运行的 Mac 应用。给普通用户的下载指引应明确选择 **`Figure Converter.zip`**。操作入口可参考 [GitHub 官方发布说明](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
+GitHub 会额外生成名为 “Source code” 的压缩包。它们是源码，不是可双击运行的 Mac 应用。给普通用户的下载指引应明确选择 **`Figure-Converter.zip`**。操作入口可参考 [GitHub 官方发布说明](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
 
 ## 4. 发给其他人的使用说明
 
 可以直接复制下面这段，并附上你的仓库或 Release 链接：
 
-> Figure Converter 是 macOS 科研图转换工具，支持 AI/EPS/SVG/PDF 导出 SVG、EMF、高分辨率 PNG、PDF 和 EPS。请在 Releases 下载 `Figure Converter.zip`，解压后将应用放入“应用程序”。当前安装包面向 Apple Silicon Mac，需要安装并激活 Adobe Illustrator，并确保 `/usr/bin/python3` 为 3.9 或更高版本。首次使用允许应用控制 Illustrator。拖入文件、选择输出格式，再点“开始转换”；默认选择 SVG、EMF、PNG，PDF/EPS 可按需勾选。期刊要求 180 mm 时，勾选“裁剪画板白边”和“自定义宽度”，输入 180；五种格式均按此宽度等比例缩放，每个画板单独输出。EPS 中的透明效果会扁平化，正式使用前请核对。
+> Figure Converter 是 macOS 科研图转换工具，支持 AI/EPS/SVG/PDF 导出 SVG、EMF、高分辨率 PNG、PDF 和 EPS。请在 Releases 下载 `Figure-Converter.zip`，解压后将应用放入“应用程序”。当前安装包面向 Apple Silicon Mac，需要安装并激活 Adobe Illustrator，并确保 `/usr/bin/python3` 为 3.9 或更高版本。首次使用允许应用控制 Illustrator。拖入文件、选择输出格式，再点“开始转换”；默认选择 SVG、EMF、PNG，PDF/EPS 可按需勾选。期刊要求 180 mm 时，勾选“裁剪画板白边”和“自定义宽度”，输入 180；五种格式均按此宽度等比例缩放，每个画板单独输出。EPS 中的透明效果会扁平化，正式使用前请核对。
 
 更详细的依赖安装、权限和常见问题见 [使用说明](USAGE.md)。
 
