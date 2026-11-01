@@ -3,11 +3,21 @@ import AppKit
 import UniformTypeIdentifiers
 
 private enum Palette {
-    static let paper = Color(white: 0.975)
-    static let ink = Color(white: 0.10)
-    static let accent = Color(white: 0.08)
-    static let muted = Color(white: 0.43)
-    static let border = Color(white: 0.84)
+    private static func shade(light: CGFloat, dark: CGFloat) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor(white: isDark ? dark : light, alpha: 1)
+        })
+    }
+
+    static let paper = shade(light: 0.96, dark: 0.10)
+    static let surface = shade(light: 1.0, dark: 0.145)
+    static let ink = shade(light: 0.10, dark: 0.94)
+    static let accent = ink
+    static let onAccent = shade(light: 1.0, dark: 0.08)
+    static let muted = shade(light: 0.40, dark: 0.66)
+    static let border = shade(light: 0.86, dark: 0.26)
+    static let wash = ink.opacity(0.07)
 }
 
 private enum JobState: Equatable {
@@ -168,6 +178,8 @@ private final class ConverterModel: ObservableObject {
     private var runOptions: [String] = []
     private var runOutputFolder: URL?
 
+    private static let missingIllustratorNotice = "未检测到 Adobe Illustrator。请安装并完成首次启动后，点“重新检测”。"
+
     var waitingCount: Int { jobs.filter { $0.state == .waiting || $0.state == .failed }.count }
     var doneCount: Int { jobs.filter { $0.state == .done }.count }
     var requestedWidthMM: Double? {
@@ -182,6 +194,20 @@ private final class ConverterModel: ObservableObject {
         !busy && !probing && illustratorAvailable && !formats.isEmpty && waitingCount > 0 && widthValidationMessage == nil
     }
 
+    var remainingInRun: Int {
+        pendingRun.count + jobs.filter { $0.state == .processing }.count
+    }
+    /// Why the convert button is unavailable, shown next to it.
+    var convertHint: String? {
+        guard !busy, !probing else { return nil }
+        if !illustratorAvailable { return "需要 Illustrator" }
+        if jobs.isEmpty { return "请先添加文件" }
+        if formats.isEmpty { return "请至少选择一种格式" }
+        if widthValidationMessage != nil { return "宽度无效" }
+        if waitingCount == 0 { return "全部已完成" }
+        return nil
+    }
+
     func probe() {
         probing = true
         DispatchQueue.global(qos: .userInitiated).async {
@@ -191,7 +217,9 @@ private final class ConverterModel: ObservableObject {
                 DispatchQueue.main.async {
                     self.illustratorAvailable = result.illustrator.available
                     if !result.illustrator.available {
-                        self.notice = "未检测到 Adobe Illustrator。请安装并完成首次启动后，点“重新检测”。"
+                        self.notice = Self.missingIllustratorNotice
+                    } else if self.notice == Self.missingIllustratorNotice {
+                        self.notice = nil
                     }
                     self.probing = false
                 }
@@ -221,6 +249,28 @@ private final class ConverterModel: ObservableObject {
         }
         if rejected > 0 { notice = "已略过 \(rejected) 个不支持的项目。请添加 AI、EPS、SVG 或 PDF 文件。" }
         if autoConvert && canConvert { convert() }
+    }
+
+    func addDropped(_ providers: [NSItemProvider]) -> Bool {
+        let fileProviders = providers.filter { $0.canLoadObject(ofClass: URL.self) }
+        guard !fileProviders.isEmpty else { return false }
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var urls: [Int: URL] = [:]
+        for (index, provider) in fileProviders.enumerated() {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url {
+                    lock.lock(); urls[index] = url; lock.unlock()
+                }
+                group.leave()
+            }
+        }
+        // One add call per drop: auto-convert then sees the whole batch at once.
+        group.notify(queue: .main) {
+            self.add(urls.keys.sorted().compactMap { urls[$0] })
+        }
+        return true
     }
 
     func pickFiles() {
@@ -348,72 +398,135 @@ private final class ConverterModel: ObservableObject {
     }
 }
 
-private struct FileDropTarget: NSViewRepresentable {
-    var onDrop: ([URL]) -> Void
-    @Binding var highlighted: Bool
+private struct CropMarks: Shape {
+    var length: CGFloat = 20
 
-    func makeNSView(context: Context) -> DropView {
-        let view = DropView()
-        view.onDrop = onDrop
-        view.onHighlight = { highlighted = $0 }
-        view.registerForDraggedTypes([.fileURL])
-        return view
-    }
-
-    func updateNSView(_ view: DropView, context: Context) {
-        view.onDrop = onDrop
-        view.onHighlight = { highlighted = $0 }
-    }
-
-    final class DropView: NSView {
-        var onDrop: (([URL]) -> Void)?
-        var onHighlight: ((Bool) -> Void)?
-
-        override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-            let accepts = sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
-            onHighlight?(accepts)
-            return accepts ? .copy : []
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for (corner, x, y) in [(CGPoint(x: rect.minX, y: rect.minY), length, length),
+                               (CGPoint(x: rect.maxX, y: rect.minY), -length, length),
+                               (CGPoint(x: rect.minX, y: rect.maxY), length, -length),
+                               (CGPoint(x: rect.maxX, y: rect.maxY), -length, -length)] {
+            path.move(to: CGPoint(x: corner.x + x, y: corner.y))
+            path.addLine(to: corner)
+            path.addLine(to: CGPoint(x: corner.x, y: corner.y + y))
         }
-
-        override func draggingExited(_ sender: NSDraggingInfo?) { onHighlight?(false) }
-        override func draggingEnded(_ sender: NSDraggingInfo) { onHighlight?(false) }
-        override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-            onHighlight?(false)
-            let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-            guard !urls.isEmpty else { return false }
-            onDrop?(urls)
-            return true
-        }
+        return path
     }
 }
 
-private struct FormatCard: View {
+private struct SmallLinkButton: View {
+    let title: String
+    var color = Palette.ink
+    let action: () -> Void
+
+    init(_ title: String, color: Color = Palette.ink, action: @escaping () -> Void) {
+        self.title = title
+        self.color = color
+        self.action = action
+    }
+
+    var body: some View {
+        Button(title, action: action).buttonStyle(.plain)
+            .font(.system(size: 12, weight: .medium)).foregroundColor(color)
+    }
+}
+
+private struct FormatRow: View {
     let title: String
     let subtitle: String
-    let icon: String
     let selected: Bool
     let available: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: icon).font(.system(size: 20, weight: .medium)).frame(width: 27)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(.system(size: 14, weight: .semibold))
-                    Text(subtitle).font(.system(size: 11)).foregroundColor(Palette.muted)
-                }
-                Spacer()
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 18)).foregroundColor(selected ? Palette.accent : Palette.border)
+            HStack(spacing: 10) {
+                Image(systemName: selected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 15)).foregroundColor(selected ? Palette.accent : Palette.muted)
+                Text(title).font(.system(size: 12, weight: selected ? .bold : .medium, design: .monospaced))
+                    .frame(width: 32, alignment: .leading)
+                Text(subtitle).font(.system(size: 12)).foregroundColor(Palette.muted).lineLimit(1)
+                Spacer(minLength: 0)
             }
-            .foregroundColor(Palette.ink)
-            .padding(.horizontal, 14).padding(.vertical, 12)
-            .background(selected ? Palette.accent.opacity(0.065) : Color.white)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(selected ? Palette.accent.opacity(0.75) : Palette.border, lineWidth: selected ? 1.4 : 1))
+            .padding(.horizontal, 9).frame(height: 30)
+            .background(selected ? Palette.wash : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain).disabled(!available).opacity(available ? 1 : 0.45)
+        .accessibilityLabel("\(title)，\(subtitle)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+private struct SettingsSection<Content: View>: View {
+    let title: String
+    var trailing: String?
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title).font(.system(size: 12, weight: .semibold))
+                Spacer()
+                if let trailing {
+                    Text(trailing).font(.system(size: 11)).foregroundColor(Palette.muted)
+                }
+            }
+            content
+        }
+    }
+}
+
+private struct SettingRow<Control: View>: View {
+    let title: String
+    @ViewBuilder let control: Control
+
+    var body: some View {
+        HStack {
+            Text(title).font(.system(size: 12))
+            Spacer(minLength: 8)
+            control
+        }.frame(minHeight: 22)
+    }
+}
+
+private struct Caption: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text).font(.system(size: 11)).foregroundColor(Palette.muted)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct StatusBadge: View {
+    let job: ConversionJob
+
+    private var partial: Bool { job.state == .failed && !job.outputs.isEmpty }
+
+    private var symbol: String? {
+        switch job.state {
+        case .waiting: return "circle.dashed"
+        case .processing: return nil
+        case .done: return "checkmark.circle.fill"
+        case .failed: return partial ? "circle.lefthalf.filled" : "exclamationmark.circle.fill"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if job.state == .processing { ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 14, height: 14) }
+            if let symbol { Image(systemName: symbol) }
+            Text(partial ? "部分完成" : job.state.label)
+        }
+        .font(.system(size: 12, weight: job.state == .waiting ? .regular : .medium))
+        .foregroundColor(job.state == .failed ? Palette.onAccent : job.state == .waiting ? Palette.muted : Palette.ink)
+        .padding(.horizontal, job.state == .failed ? 8 : 0).padding(.vertical, job.state == .failed ? 3 : 0)
+        .background(job.state == .failed ? Palette.accent : Color.clear)
+        .clipShape(Capsule())
     }
 }
 
@@ -438,358 +551,369 @@ private struct JobRow: View {
         }
     }
 
-    var statusColor: Color {
-        switch job.state {
-        case .done: return Palette.accent
-        case .failed: return Palette.ink
-        default: return Palette.muted
-        }
-    }
-
-    var statusSymbol: String {
-        switch job.state {
-        case .done: return "checkmark.circle.fill"
-        case .failed: return "exclamationmark.circle.fill"
-        case .waiting: return "clock"
-        case .processing: return ""
-        }
+    private var exportedFormats: [String] {
+        ["svg", "emf", "png", "pdf", "eps"].filter { format in job.outputs.contains { $0.format == format } }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 11) {
                 Text(job.url.pathExtension.uppercased())
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(Palette.accent).frame(width: 40, height: 44)
-                    .background(Palette.accent.opacity(0.075)).clipShape(RoundedRectangle(cornerRadius: 8))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(job.url.lastPathComponent).font(.system(size: 13, weight: .medium)).lineLimit(1).help(job.url.path)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .frame(width: 36, height: 36)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Palette.border))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(job.url.lastPathComponent).font(.system(size: 13, weight: .medium))
+                        .lineLimit(1).truncationMode(.middle).help(job.url.path)
                     Text(!job.outputs.isEmpty ? "已导出 \(job.outputs.count) 个文件" : job.url.deletingLastPathComponent().lastPathComponent)
                         .font(.system(size: 11)).foregroundColor(Palette.muted).lineLimit(1)
                 }
-                Spacer(minLength: 4)
-                if job.state == .processing { ProgressView().controlSize(.small).scaleEffect(0.8) }
-                HStack(spacing: 4) {
-                    if !statusSymbol.isEmpty { Image(systemName: statusSymbol) }
-                    Text(job.state == .failed && !job.outputs.isEmpty ? "部分完成" : job.state.label)
-                }
-                .font(.system(size: 11, weight: job.state == .failed ? .semibold : .medium))
-                .foregroundColor(statusColor)
+                Spacer(minLength: 8)
+                StatusBadge(job: job)
                 if !job.outputs.isEmpty {
-                    Button(action: onReveal) { Image(systemName: "folder").font(.system(size: 13)) }
-                        .buttonStyle(.plain).help("在访达中显示导出文件")
+                    Button(action: onReveal) { Image(systemName: "folder").font(.system(size: 13)).frame(width: 22, height: 22).contentShape(Rectangle()) }
+                        .buttonStyle(.plain).help("在访达中显示导出文件").accessibilityLabel("在访达中显示导出文件")
                 }
                 if !busy {
-                    Button(action: onRemove) { Image(systemName: "xmark").font(.system(size: 10)) }
-                        .buttonStyle(.plain).foregroundColor(Palette.muted).help("从列表移除")
+                    Button(action: onRemove) { Image(systemName: "xmark").font(.system(size: 10, weight: .medium)).frame(width: 22, height: 22).contentShape(Rectangle()) }
+                        .buttonStyle(.plain).foregroundColor(Palette.muted).help("从列表移除").accessibilityLabel("从列表移除")
                 }
             }
-            if let error = job.error, !error.isEmpty {
-                HStack(alignment: .top, spacing: 7) {
-                    Image(systemName: "exclamationmark.triangle.fill").padding(.top, 1)
-                    Text(error).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 7) {
+                if let error = job.error, !error.isEmpty {
+                    HStack(alignment: .top, spacing: 7) {
+                        Image(systemName: "exclamationmark.triangle.fill").padding(.top, 1)
+                        Text(error).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.system(size: 12)).padding(9)
+                    .background(Palette.wash).clipShape(RoundedRectangle(cornerRadius: 6))
                 }
-                .font(.system(size: 11, weight: .medium)).foregroundColor(Palette.ink)
-                .padding(9).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Palette.accent.opacity(0.055)).clipShape(RoundedRectangle(cornerRadius: 7))
-            }
-            if let firstSize = sizeSummaries.first {
-                Text(firstSize + (sizeSummaries.count > 1 ? " · 另有 \(sizeSummaries.count - 1) 个画板" : ""))
-                    .font(.system(size: 11)).foregroundColor(Palette.accent).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if !job.warnings.isEmpty || job.outputDirectory != nil {
-                Button(action: onToggleDetails) {
-                    HStack(spacing: 5) {
-                        Image(systemName: detailsExpanded ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
-                        Text(job.warnings.isEmpty ? "转换详情" : "有 \(job.warnings.count) 条说明")
-                    }.font(.system(size: 11)).foregroundColor(Palette.muted)
-                }.buttonStyle(.plain)
-                if detailsExpanded {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if sizeSummaries.count > 1 {
-                            ForEach(sizeSummaries, id: \.self) { size in
-                                Text(size).font(.system(size: 11)).foregroundColor(Palette.muted).textSelection(.enabled)
+                if !exportedFormats.isEmpty {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        ForEach(exportedFormats, id: \.self) { format in
+                            Text(format.uppercased()).font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .background(Palette.wash).clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                        if let firstSize = sizeSummaries.first {
+                            Text(firstSize + (sizeSummaries.count > 1 ? " · 另有 \(sizeSummaries.count - 1) 个画板" : ""))
+                                .font(.system(size: 11).monospacedDigit()).foregroundColor(Palette.muted)
+                                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true).padding(.leading, 5)
+                        }
+                    }
+                }
+                if !job.warnings.isEmpty || job.outputDirectory != nil {
+                    Button(action: onToggleDetails) {
+                        HStack(spacing: 5) {
+                            Image(systemName: detailsExpanded ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .semibold))
+                            Text(job.warnings.isEmpty ? "转换详情" : "有 \(job.warnings.count) 条说明")
+                        }.font(.system(size: 11)).foregroundColor(Palette.muted).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                    if detailsExpanded {
+                        VStack(alignment: .leading, spacing: 7) {
+                            if sizeSummaries.count > 1 {
+                                ForEach(sizeSummaries, id: \.self) { size in
+                                    Text(size).font(.system(size: 11).monospacedDigit()).foregroundColor(Palette.muted).textSelection(.enabled)
+                                }
                             }
-                        }
-                        ForEach(Array(job.warnings.enumerated()), id: \.offset) { _, warning in
-                            HStack(alignment: .top, spacing: 6) {
-                                Image(systemName: "info.circle").padding(.top, 1)
-                                Text(warning).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                            }.font(.system(size: 11)).foregroundColor(Palette.muted)
-                        }
-                        if job.outputDirectory != nil {
-                            Button("查看转换报告", action: onOpenReport).buttonStyle(.plain)
-                                .font(.system(size: 11)).foregroundColor(Palette.accent)
-                        }
-                    }.padding(.leading, 14).padding(.top, 3)
+                            ForEach(Array(job.warnings.enumerated()), id: \.offset) { _, warning in
+                                HStack(alignment: .top, spacing: 6) {
+                                    Image(systemName: "info.circle").padding(.top, 1)
+                                    Text(warning).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                                }.font(.system(size: 11)).foregroundColor(Palette.muted)
+                            }
+                            if job.outputDirectory != nil {
+                                SmallLinkButton("查看转换报告", action: onOpenReport)
+                            }
+                        }.padding(.leading, 14)
+                    }
                 }
-            }
+            }.padding(.leading, 47)
         }
-        .padding(14).background(Color.white).clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(job.state == .failed ? Palette.accent.opacity(0.55) : Palette.border.opacity(0.6), lineWidth: 1))
+        .padding(.horizontal, 12).padding(.vertical, 10)
     }
 }
 
 private struct MainView: View {
-    @StateObject private var model = ConverterModel()
+    @StateObject private var model: ConverterModel
+
+    init(model: ConverterModel = ConverterModel()) {
+        _model = StateObject(wrappedValue: model)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            HStack(alignment: .top, spacing: 24) {
+            titleBar
+            Divider()
+            HStack(spacing: 0) {
                 filesPanel
-                settingsPanel.frame(width: 300)
-            }.padding(.horizontal, 30).padding(.bottom, 20)
-            footer
+                Divider()
+                settingsPanel.frame(width: 330).background(Palette.surface)
+            }
+            Divider()
+            actionBar
         }
-        .frame(minWidth: 960, minHeight: 720)
-        .background(Palette.paper).foregroundColor(Palette.ink)
-        .tint(Palette.accent).preferredColorScheme(.light)
+        .frame(minWidth: 960, minHeight: 680)
+        .background(Palette.paper)
+        .foregroundColor(Palette.ink)
+        .tint(Palette.accent)
+        .ignoresSafeArea(.container, edges: .top)
+        .onDrop(of: [.fileURL], isTargeted: $model.dragHighlighted) { providers in
+            model.addDropped(providers)
+        }
         .onAppear { model.probe() }
         .onOpenURL { model.add([$0]) }
     }
 
-    private var header: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
-                .font(.system(size: 26, weight: .medium)).foregroundColor(.white)
-                .frame(width: 51, height: 51).background(Palette.accent).clipShape(RoundedRectangle(cornerRadius: 15))
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Figure Converter").font(.system(size: 25, weight: .semibold, design: .rounded))
-                Text("科研插图，一次导出。")
-                    .font(.system(size: 12)).foregroundColor(Palette.muted)
-            }
+    // Height and top padding line the title up with the window's traffic lights.
+    private var titleBar: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("Figure Converter").font(.system(size: 13, weight: .semibold))
+            Text("科研插图，一次导出。").font(.system(size: 12)).foregroundColor(Palette.muted)
             Spacer()
-            Label("本地处理", systemImage: "desktopcomputer")
-                .font(.system(size: 11, weight: .medium)).foregroundColor(Palette.accent)
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Palette.accent.opacity(0.07)).clipShape(Capsule())
-        }.padding(.horizontal, 30).padding(.top, 25).padding(.bottom, 26)
+            HStack(spacing: 6) {
+                Circle().fill(model.illustratorAvailable ? Palette.accent : Color.clear)
+                    .overlay(Circle().stroke(Palette.muted, lineWidth: model.illustratorAvailable ? 0 : 1))
+                    .frame(width: 6, height: 6)
+                Text(model.probing ? "正在检查转换环境…" : model.illustratorAvailable ? "Illustrator 已就绪 · 五种格式本地导出" : "Illustrator 尚未就绪")
+                    .font(.system(size: 11)).foregroundColor(Palette.muted)
+                if !model.probing && !model.illustratorAvailable {
+                    SmallLinkButton("重新检测") { model.probe() }
+                }
+            }.frame(height: 16)
+        }
+        .padding(.leading, 84).padding(.trailing, 16).padding(.top, 6).frame(height: 36, alignment: .top)
+        .background(Palette.surface)
     }
 
     private var filesPanel: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            HStack {
-                Text("01").font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundColor(Palette.accent)
-                Text("添加文件").font(.system(size: 14, weight: .semibold))
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 14) {
+                Text("文件").font(.system(size: 13, weight: .semibold))
+                if !model.jobs.isEmpty {
+                    Text("\(model.jobs.count) 个文件 · \(model.doneCount) 个已完成")
+                        .font(.system(size: 11).monospacedDigit()).foregroundColor(Palette.muted)
+                }
                 Spacer()
                 if model.doneCount > 0 {
-                    Button("再次导出") { model.requeueCompleted() }.font(.system(size: 11)).buttonStyle(.plain)
-                        .foregroundColor(Palette.accent).disabled(model.busy)
+                    SmallLinkButton("再次导出") { model.requeueCompleted() }.disabled(model.busy)
                 }
                 if !model.jobs.isEmpty {
-                    Button("清空列表") { model.jobs.removeAll() }.font(.system(size: 11)).buttonStyle(.plain)
-                        .foregroundColor(Palette.muted).disabled(model.busy)
+                    SmallLinkButton("清空列表", color: Palette.muted) { model.jobs.removeAll() }.disabled(model.busy)
+                    addFilesButton
                 }
-            }
-            ZStack {
-                RoundedRectangle(cornerRadius: 17).fill(model.dragHighlighted ? Palette.accent.opacity(0.10) : Color.white.opacity(0.72))
-                RoundedRectangle(cornerRadius: 17).stroke(Palette.accent.opacity(model.dragHighlighted ? 0.8 : 0.35), style: StrokeStyle(lineWidth: 1.3, dash: [6, 5]))
-                VStack(spacing: 9) {
-                    Image(systemName: "square.and.arrow.down").font(.system(size: 29, weight: .light)).foregroundColor(Palette.accent)
-                    Text(model.dragHighlighted ? "松开，即可加入列表" : "把图拖到这里")
-                        .font(.system(size: 19, weight: .medium))
-                    Text("AI · EPS · SVG · PDF  /  支持批量添加")
-                        .font(.system(size: 11)).foregroundColor(Palette.muted)
-                }.allowsHitTesting(false)
-                FileDropTarget(onDrop: { model.add($0) }, highlighted: $model.dragHighlighted)
-            }.frame(height: 164)
-            HStack {
-                Button { model.pickFiles() } label: { Label("选择文件", systemImage: "plus") }
-                    .buttonStyle(.bordered).controlSize(.small)
-                Spacer()
-                Toggle("拖入后自动转换", isOn: $model.autoConvert).font(.system(size: 11)).toggleStyle(.checkbox)
-                    .disabled(model.busy)
-            }
-            if let notice = model.notice {
-                HStack(alignment: .top, spacing: 7) {
-                    Image(systemName: "info.circle")
-                    Text(notice).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                }.font(.system(size: 11)).foregroundColor(Palette.muted)
-                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.white.opacity(0.8)).clipShape(RoundedRectangle(cornerRadius: 9))
-            }
-            if model.jobs.isEmpty {
-                VStack(spacing: 10) {
-                    HStack(spacing: 14) {
-                        sampleMark("AI", color: Palette.accent)
-                        Image(systemName: "arrow.right").foregroundColor(Palette.muted.opacity(0.6))
-                        sampleMark("SVG", color: Palette.accent)
-                        sampleMark("EMF", color: Palette.accent)
-                        sampleMark("PNG", color: Palette.accent)
-                        sampleMark("PDF", color: Palette.accent)
-                        sampleMark("EPS", color: Palette.accent)
-                    }
-                    Text("选好输出格式，一次导出多个版本")
-                        .font(.system(size: 12)).foregroundColor(Palette.muted)
-                    Text("原文件保留，结果另存。")
-                        .font(.system(size: 11)).foregroundColor(Palette.muted.opacity(0.8))
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                HStack {
-                    Text("文件列表").font(.system(size: 11, weight: .medium)).foregroundColor(Palette.muted)
-                    Spacer()
-                    Text("\(model.jobs.count) 个文件 · \(model.doneCount) 个已完成").font(.system(size: 11)).foregroundColor(Palette.muted)
-                }
-                ScrollView {
-                    LazyVStack(spacing: 9) {
-                        ForEach(model.jobs) { job in
-                            JobRow(job: job, busy: model.busy,
-                                   onRemove: { model.remove(job.id) }, onReveal: { model.reveal(job) },
-                                   detailsExpanded: model.expandedDetails.contains(job.id),
-                                   onToggleDetails: { model.toggleDetails(job.id) }, onOpenReport: { model.openReport(job) })
-                        }
-                    }.padding(.trailing, 2)
-                }
-            }
-        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }.frame(height: 24)
+            if let notice = model.notice { noticeBanner(notice) }
+            if model.jobs.isEmpty { dropStage } else { jobList }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func sampleMark(_ text: String, color: Color) -> some View {
-        Text(text).font(.system(size: 11, weight: .semibold, design: .monospaced))
-            .foregroundColor(color).frame(width: 49, height: 57)
-            .background(Color.white.opacity(0.7)).clipShape(RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Palette.border.opacity(0.6)))
+    private var addFilesButton: some View {
+        Button { model.pickFiles() } label: { Label("选择文件", systemImage: "plus") }
+            .controlSize(.small)
+            .keyboardShortcut("o", modifiers: .command)
+            .help("选择文件（⌘O）")
+    }
+
+    private func noticeBanner(_ notice: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "info.circle").padding(.top, 1)
+            Text(notice).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            if !model.probing && !model.illustratorAvailable {
+                SmallLinkButton("重新检测") { model.probe() }
+            }
+            Button { model.notice = nil } label: {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .medium)).frame(width: 16, height: 16).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundColor(Palette.muted).help("关闭提示").accessibilityLabel("关闭提示")
+        }
+        .font(.system(size: 12)).padding(.horizontal, 10).padding(.vertical, 8)
+        .background(Palette.surface).clipShape(RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Palette.border))
+    }
+
+    private var dropStage: some View {
+        ZStack {
+            if model.dragHighlighted { Rectangle().fill(Palette.wash) }
+            CropMarks(length: model.dragHighlighted ? 34 : 22)
+                .stroke(model.dragHighlighted ? Palette.accent : Palette.muted, lineWidth: model.dragHighlighted ? 2 : 1)
+            VStack(spacing: 10) {
+                Image(systemName: "square.and.arrow.down").font(.system(size: 30, weight: .light))
+                Text(model.dragHighlighted ? "松开，即可加入列表" : "把图拖到这里").font(.system(size: 20, weight: .medium))
+                Text("AI · EPS · SVG · PDF  /  支持批量添加").font(.system(size: 12)).foregroundColor(Palette.muted)
+                addFilesButton.controlSize(.regular).padding(.top, 8)
+                Text("原文件保留，结果另存。").font(.system(size: 11)).foregroundColor(Palette.muted).padding(.top, 8)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: model.dragHighlighted)
+    }
+
+    private var jobList: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(model.jobs) { job in
+                    JobRow(job: job, busy: model.busy,
+                           onRemove: { model.remove(job.id) }, onReveal: { model.reveal(job) },
+                           detailsExpanded: model.expandedDetails.contains(job.id),
+                           onToggleDetails: { model.toggleDetails(job.id) }, onOpenReport: { model.openReport(job) })
+                    if job.id != model.jobs.last?.id { Divider().padding(.leading, 59) }
+                }
+                Text(model.dragHighlighted ? "松开，即可加入列表" : "继续拖入文件，可追加到列表")
+                    .font(.system(size: 11, weight: model.dragHighlighted ? .semibold : .regular))
+                    .foregroundColor(model.dragHighlighted ? Palette.ink : Palette.muted)
+                    .frame(maxWidth: .infinity).padding(.vertical, 12)
+            }
+        }
+        .background(Palette.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(model.dragHighlighted ? Palette.accent : Palette.border, lineWidth: model.dragHighlighted ? 2 : 1))
     }
 
     private var settingsPanel: some View {
         ScrollView {
-          VStack(alignment: .leading, spacing: 13) {
-            HStack(spacing: 7) {
-                Text("02").font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundColor(Palette.accent)
-                Text("输出格式").font(.system(size: 14, weight: .semibold))
-                Spacer()
-                Text("五种格式 · 可多选").font(.system(size: 11)).foregroundColor(Palette.muted)
-            }
-            VStack(spacing: 8) {
-                formatCard("svg", title: "SVG", subtitle: "保留矢量，适合继续排版", icon: "point.3.connected.trianglepath.dotted")
-                formatCard("emf", title: "EMF", subtitle: "用于 Word 与 PowerPoint", icon: "doc.richtext", available: model.illustratorAvailable)
-                formatCard("png", title: "PNG", subtitle: "高分辨率，支持透明背景", icon: "photo")
-                formatCard("pdf", title: "PDF", subtitle: "用于投稿、出版与打印", icon: "doc.text")
-                formatCard("eps", title: "EPS", subtitle: "适合传统期刊投稿", icon: "doc.plaintext")
-            }.disabled(model.busy)
-            if model.formats.contains("emf") {
-                Text("EMF 中的渐变或透明效果可能变为局部图片。")
-                    .font(.system(size: 10)).foregroundColor(Palette.muted).fixedSize(horizontal: false, vertical: true)
-            }
-            if model.formats.contains("eps") {
-                Text("EPS 会合并透明效果，部分区域可能转为图片。")
-                    .font(.system(size: 10)).foregroundColor(Palette.muted).fixedSize(horizontal: false, vertical: true)
-            }
-            Divider().padding(.vertical, 2)
-            VStack(alignment: .leading, spacing: 10) {
-                Text("裁剪与尺寸").font(.system(size: 12, weight: .semibold))
-                Toggle("裁剪画板白边", isOn: $model.trimArtboard).toggleStyle(.checkbox).font(.system(size: 12))
-                Text("画板缩到图形边界，不会删除图片内部的白色区域。")
-                    .font(.system(size: 10)).foregroundColor(Palette.muted).fixedSize(horizontal: false, vertical: true)
-                Toggle("自定义宽度", isOn: $model.customWidthEnabled).toggleStyle(.checkbox).font(.system(size: 12))
-                if model.customWidthEnabled {
-                    HStack(spacing: 8) {
-                        Text("宽度").font(.system(size: 12))
-                        TextField("180", text: $model.widthMMText).textFieldStyle(.roundedBorder)
-                            .multilineTextAlignment(.trailing).frame(width: 88)
-                            .accessibilityLabel("导出宽度，单位毫米")
-                        Text("mm").font(.system(size: 11)).foregroundColor(Palette.muted)
-                        Spacer(minLength: 0)
-                        Image(systemName: "lock.fill").font(.system(size: 10)).foregroundColor(Palette.accent)
-                        Text("等比例").font(.system(size: 10)).foregroundColor(Palette.accent)
-                    }
-                    if let message = model.widthValidationMessage {
-                        HStack(alignment: .top, spacing: 5) {
-                            Image(systemName: "exclamationmark.circle.fill").padding(.top, 1)
-                            Text(message).fixedSize(horizontal: false, vertical: true)
-                        }.font(.system(size: 10, weight: .semibold)).foregroundColor(Palette.ink)
-                    } else if let width = model.requestedWidthMM, model.formats.contains("png") {
-                        Text("PNG 宽约 \(Int((width / 25.4 * Double(model.dpi)).rounded())) px（\(model.dpi) DPI）")
-                            .font(.system(size: 10)).foregroundColor(Palette.muted)
-                    }
-                    Text(model.trimArtboard ? "先裁掉画板空白，再按宽度等比例缩放；高度自动计算。" : "按当前画板比例缩放；高度自动计算。")
-                        .font(.system(size: 10)).foregroundColor(Palette.muted).fixedSize(horizontal: false, vertical: true)
-                }
-            }.disabled(model.busy)
-            Divider().padding(.vertical, 2)
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("PNG 分辨率").font(.system(size: 12, weight: .medium))
-                    Spacer()
-                    Picker("分辨率", selection: $model.dpi) {
-                        Text("300 DPI").tag(300)
-                        Text("600 DPI").tag(600)
-                        Text("1200 DPI").tag(1200)
-                    }.labelsHidden().frame(width: 116)
-                }.disabled(!model.formats.contains("png"))
-                HStack {
-                    Text("PNG 背景").font(.system(size: 12, weight: .medium))
-                    Spacer()
-                    Picker("背景", selection: $model.whiteBackground) {
-                        Text("透明").tag(false)
-                        Text("白色").tag(true)
-                    }.labelsHidden().pickerStyle(.segmented).frame(width: 116)
-                }.disabled(!model.formats.contains("png"))
-                HStack {
-                    Text("导出画板").font(.system(size: 12, weight: .medium))
-                    Spacer()
-                    Picker("画板", selection: $model.firstArtboard) {
-                        Text("全部").tag(false)
-                        Text("首个").tag(true)
-                    }.labelsHidden().pickerStyle(.segmented).frame(width: 116)
-                }
-                Toggle("文字转轮廓", isOn: $model.outlineText).toggleStyle(.checkbox).font(.system(size: 12))
-                Toggle("展开描边与虚线", isOn: $model.outlineStrokes).toggleStyle(.checkbox).font(.system(size: 12))
-            }.disabled(model.busy)
-            Text("在副本中预处理，保留原文件。")
-                .font(.system(size: 10)).foregroundColor(Palette.muted)
-          }.padding(.trailing, 3).padding(.bottom, 8)
-        }.frame(maxHeight: .infinity, alignment: .topLeading)
+            VStack(alignment: .leading, spacing: 13) {
+                formatSection
+                Divider()
+                sizeSection.disabled(model.busy)
+                Divider()
+                pngSection.disabled(model.busy)
+                Divider()
+                artworkSection.disabled(model.busy)
+            }.padding(14)
+        }
     }
 
-    private func formatCard(_ id: String, title: String, subtitle: String, icon: String, available: Bool = true) -> some View {
-        FormatCard(title: title, subtitle: subtitle, icon: icon, selected: model.formats.contains(id), available: available) {
+    private var formatSection: some View {
+        SettingsSection(title: "输出格式", trailing: "已选 \(model.formats.count) / 5 · 可多选") {
+            VStack(spacing: 2) {
+                formatRow("svg", title: "SVG", subtitle: "保留矢量，适合继续排版")
+                formatRow("emf", title: "EMF", subtitle: "用于 Word 与 PowerPoint", available: model.illustratorAvailable)
+                formatRow("png", title: "PNG", subtitle: "高分辨率，支持透明背景")
+                formatRow("pdf", title: "PDF", subtitle: "用于投稿、出版与打印")
+                formatRow("eps", title: "EPS", subtitle: "适合传统期刊投稿")
+            }.disabled(model.busy)
+            if model.formats.contains("emf") { Caption("EMF 中的渐变或透明效果可能变为局部图片。") }
+            if model.formats.contains("eps") { Caption("EPS 会合并透明效果，部分区域可能转为图片。") }
+        }
+    }
+
+    private func formatRow(_ id: String, title: String, subtitle: String, available: Bool = true) -> some View {
+        FormatRow(title: title, subtitle: subtitle, selected: model.formats.contains(id), available: available) {
             if model.formats.contains(id) { model.formats.remove(id) } else { model.formats.insert(id) }
         }
     }
 
-    private var footer: some View {
-        VStack(spacing: 13) {
-            Divider()
-            HStack(spacing: 12) {
-                Image(systemName: "folder").font(.system(size: 16)).foregroundColor(Palette.accent)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("保存到").font(.system(size: 10)).foregroundColor(Palette.muted)
-                    Text(model.outputFolder?.path ?? "原文件旁的 Figure Exports 文件夹")
-                        .font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+    private var sizeSection: some View {
+        SettingsSection(title: "裁剪与尺寸") {
+            SettingRow(title: "裁剪画板白边") { settingSwitch("裁剪画板白边", isOn: $model.trimArtboard) }
+            Caption("画板缩到图形边界，不会删除图片内部的白色区域。")
+            SettingRow(title: "自定义宽度") { settingSwitch("自定义宽度", isOn: $model.customWidthEnabled) }
+            if model.customWidthEnabled {
+                HStack(spacing: 8) {
+                    TextField("180", text: $model.widthMMText).textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.trailing).frame(width: 76)
+                        .accessibilityLabel("导出宽度，单位毫米")
+                    Text("mm").font(.system(size: 12)).foregroundColor(Palette.muted)
+                    Spacer(minLength: 0)
+                    Label("等比例", systemImage: "lock.fill").font(.system(size: 11)).foregroundColor(Palette.muted)
                 }
-                Button("更改") { model.pickOutputFolder() }.font(.system(size: 11)).buttonStyle(.plain)
-                    .foregroundColor(Palette.accent).disabled(model.busy)
-                if model.outputFolder != nil {
-                    Button("还原") { model.outputFolder = nil }.font(.system(size: 10)).buttonStyle(.plain)
-                        .foregroundColor(Palette.muted).disabled(model.busy)
+                if let message = model.widthValidationMessage {
+                    HStack(alignment: .top, spacing: 5) {
+                        Image(systemName: "exclamationmark.circle.fill").padding(.top, 1)
+                        Text(message).fixedSize(horizontal: false, vertical: true)
+                    }.font(.system(size: 11, weight: .semibold))
+                } else if let width = model.requestedWidthMM, model.formats.contains("png") {
+                    Caption("PNG 宽约 \(Int((width / 25.4 * Double(model.dpi)).rounded())) px（\(model.dpi) DPI）")
                 }
-                Spacer()
-                Button { model.convert() } label: {
-                    HStack(spacing: 8) {
-                        if model.busy { ProgressView().controlSize(.small).tint(.white) }
-                        Text(model.busy ? "正在转换…" : "开始转换\(model.waitingCount > 0 ? " · \(model.waitingCount)" : "")")
-                            .font(.system(size: 13, weight: .semibold))
-                        if !model.busy { Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .semibold)) }
-                    }.frame(minWidth: 125).padding(.horizontal, 15).padding(.vertical, 13)
-                        .foregroundColor(.white).background(model.canConvert || model.busy ? Palette.accent : Palette.muted.opacity(0.4))
-                        .clipShape(RoundedRectangle(cornerRadius: 11))
-                }.buttonStyle(.plain).disabled(!model.canConvert)
+                Caption(model.trimArtboard ? "先裁掉画板空白，再按宽度等比例缩放；高度自动计算。" : "按当前画板比例缩放；高度自动计算。")
             }
-            HStack(spacing: 5) {
-                Circle().fill(model.illustratorAvailable ? Palette.accent : Palette.muted).frame(width: 5, height: 5)
-                Text(model.probing ? "正在检查转换环境…" : model.illustratorAvailable ? "Illustrator 已就绪 · 五种格式本地导出" : "Illustrator 尚未就绪")
-                    .font(.system(size: 10)).foregroundColor(Palette.muted)
-                if !model.probing && !model.illustratorAvailable {
-                    Button("重新检测") { model.probe() }.buttonStyle(.plain).font(.system(size: 10)).foregroundColor(Palette.accent)
-                }
-                Spacer()
-                Text("自定义尺寸保持长宽比 · PNG 支持高分辨率")
-                    .font(.system(size: 10)).foregroundColor(Palette.muted)
+        }
+    }
+
+    private var pngSection: some View {
+        let enabled = model.formats.contains("png")
+        return SettingsSection(title: "PNG", trailing: enabled ? nil : "未选择 PNG") {
+            SettingRow(title: "分辨率（DPI）") {
+                Picker("分辨率", selection: $model.dpi) {
+                    Text("300").tag(300)
+                    Text("600").tag(600)
+                    Text("1200").tag(1200)
+                }.labelsHidden().pickerStyle(.segmented).fixedSize()
             }
-        }.padding(.horizontal, 30).padding(.bottom, 18)
+            SettingRow(title: "背景") {
+                Picker("背景", selection: $model.whiteBackground) {
+                    Text("透明").tag(false)
+                    Text("白色").tag(true)
+                }.labelsHidden().pickerStyle(.segmented).fixedSize()
+            }
+        }
+        .disabled(!enabled).opacity(enabled ? 1 : 0.5)
+    }
+
+    private var artworkSection: some View {
+        SettingsSection(title: "图稿处理") {
+            SettingRow(title: "导出画板") {
+                Picker("画板", selection: $model.firstArtboard) {
+                    Text("全部").tag(false)
+                    Text("首个").tag(true)
+                }.labelsHidden().pickerStyle(.segmented).fixedSize()
+            }
+            SettingRow(title: "文字转轮廓") { settingSwitch("文字转轮廓", isOn: $model.outlineText) }
+            SettingRow(title: "展开描边与虚线") { settingSwitch("展开描边与虚线", isOn: $model.outlineStrokes) }
+            Caption("在副本中预处理，保留原文件。")
+        }
+    }
+
+    private func settingSwitch(_ title: String, isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).controlSize(.small)
+    }
+
+    private var actionBar: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "folder").font(.system(size: 15))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("保存到").font(.system(size: 11)).foregroundColor(Palette.muted)
+                Text(model.outputFolder?.path ?? "原文件旁的 Figure Exports 文件夹")
+                    .font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                    .help(model.outputFolder?.path ?? "原文件旁的 Figure Exports 文件夹")
+            }
+            SmallLinkButton("更改") { model.pickOutputFolder() }.disabled(model.busy)
+            if model.outputFolder != nil {
+                SmallLinkButton("还原", color: Palette.muted) { model.outputFolder = nil }.disabled(model.busy)
+            }
+            Spacer(minLength: 16)
+            Toggle("拖入后自动转换", isOn: $model.autoConvert).font(.system(size: 12)).toggleStyle(.checkbox)
+                .disabled(model.busy).fixedSize()
+            if let hint = model.convertHint {
+                Text(hint).font(.system(size: 11)).foregroundColor(Palette.muted).lineLimit(1).fixedSize()
+            }
+            convertButton
+        }
+        .padding(.horizontal, 16).frame(height: 62)
+        .background(Palette.surface)
+    }
+
+    private var convertButton: some View {
+        let active = model.canConvert || model.busy
+        return Button { model.convert() } label: {
+            HStack(spacing: 8) {
+                if model.busy { ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 14, height: 14) }
+                Text(model.busy ? "正在转换… 剩 \(model.remainingInRun) 个" : "开始转换\(model.waitingCount > 0 ? " · \(model.waitingCount)" : "")")
+                    .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                if !model.busy { Image(systemName: "arrow.right").font(.system(size: 11, weight: .semibold)) }
+            }
+            .frame(minWidth: 126).padding(.horizontal, 14).frame(height: 36)
+            .foregroundColor(active ? Palette.onAccent : Palette.muted)
+            .background(active ? Palette.accent : Palette.wash)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(!model.canConvert)
+        .keyboardShortcut(.return, modifiers: .command)
+        .help("开始转换（⌘↩）")
     }
 }
 
